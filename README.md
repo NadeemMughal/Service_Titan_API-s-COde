@@ -111,9 +111,6 @@ Contributions are encouraged! To contribute:
 2. Create a branch for your feature or fix.
 3. Submit a pull request with a clear description of your changes.
 
-## License
-This project is released under the MIT License, allowing free use and modification with proper attribution.
-
 ## Contact
 For inquiries or feedback, contact:  
 **Muhammad Nadeem**  
