@@ -11,10 +11,10 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Replace with your actual credentials
-CLIENT_ID = "cid.5sz7j79l90xsz9umlgfws6q2j"
-CLIENT_SECRET = "cs2.nsfud9zksebzrn8afvd9b3bmn05n9sdxh1hok7y3iqmpiryzg9"
-TENANT_ID = "1561207974"
-APP_KEY = "ak1.p1hyw417u4rd7c19faytek0t2"
+CLIENT_ID = "add your own"
+CLIENT_SECRET = "add your own"
+TENANT_ID = "add your own"
+APP_KEY = "add your own"
 
 # URLs
 TOKEN_URL = "https://auth.servicetitan.io/connect/token"
