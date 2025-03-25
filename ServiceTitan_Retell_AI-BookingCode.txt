@@ -1,0 +1,471 @@
+from fastapi import FastAPI, Request, HTTPException, Body, Query
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+import httpx
+import logging
+from datetime import datetime, timedelta
+import time
+from typing import List, Optional
+import json
+import os
+import pytz
+
+app = FastAPI(title="ServiceTitan Workflow API with Webhook")
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+# ServiceTitan API credentials
+CLIENT_ID = "add your own"
+CLIENT_SECRET = "add your own"
+TENANT_ID = "add your own"
+APP_KEY = "add your own"
+
+# ServiceTitan API endpoints
+TOKEN_URL = "https://auth.servicetitan.io/connect/token"
+CUSTOMER_URL = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/customers"
+LOCATIONS_URL = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/locations"
+CREATE_JOB_URL = f"https://api.servicetitan.io/jpm/v2/tenant/{TENANT_ID}/jobs"
+CUSTOMER_LIST_URL = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/customers"
+JOBS_URL = f"https://api.servicetitan.io/jpm/v2/tenant/{TENANT_ID}/jobs"
+
+# Define the timezone for Pakistan
+pakistan_tz = pytz.timezone("Asia/Karachi")
+
+### Get Access Token Function
+async def get_access_token() -> str:
+    """Retrieve access token from ServiceTitan API."""
+    logger.debug("Attempting to retrieve access token.")
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            TOKEN_URL,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        if response.status_code == 200:
+            access_token = response.json().get("access_token")
+            logger.debug(f"Access token retrieved: {access_token}")
+            return access_token
+        else:
+            logger.error(f"Failed to retrieve access token: {response.text}")
+            raise HTTPException(status_code=response.status_code, detail="Failed to retrieve access token.")
+
+### Internal function to fetch customers
+async def get_customers_internal(phone: str) -> dict:
+    """Fetch customer data from ServiceTitan based on phone number."""
+    try:
+        # Remove +1 prefix and any non-digit characters
+        phone_digits = ''.join(filter(str.isdigit, phone))
+        if phone_digits.startswith('1'):
+            phone_digits = phone_digits[1:]  # Remove leading 1 after +
+
+        # Format phone number for ServiceTitan
+        formatted_phone = f"({phone_digits[:3]}) {phone_digits[3:6]}-{phone_digits[6:]}"
+
+        access_token = await get_access_token()
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "ST-App-Key": APP_KEY,
+            "Content-Type": "application/json",
+        }
+        params = {"phone": formatted_phone}
+        logger.info(f"Fetching customers with params: {params}")
+        async with httpx.AsyncClient() as client:
+            response = await client.get(CUSTOMER_LIST_URL, headers=headers, params=params)
+            logger.debug(f"ServiceTitan response: {response.text}")
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Failed to fetch customers: {response.text}")
+                raise HTTPException(status_code=response.status_code, detail="Error fetching customer data")
+    except Exception as e:
+        logger.error(f"Error in get_customers_internal: {e}")
+        raise
+
+### Internal function to fetch customer ID by phone
+async def get_customer_id_by_phone(access_token: str, phone_number: str) -> str:
+    """Find a customer ID based on a phone number."""
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "ST-App-Key": APP_KEY,
+        "Content-Type": "application/json",
+    }
+    # Remove +1 prefix if present
+    phone_digits = ''.join(filter(str.isdigit, phone_number))
+    if phone_digits.startswith('1'):
+        phone_digits = phone_digits[1:]
+    formatted_phone = f"({phone_digits[:3]}) {phone_digits[3:6]}-{phone_digits[6:]}"
+    params = {"phone": formatted_phone}  # Changed to match ServiceTitan expected param
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(CUSTOMER_LIST_URL, headers=headers, params=params)
+        logger.debug(f"Customer search response: {response.text}")
+
+        if response.status_code == 200:
+            customers = response.json().get("data", [])
+            if customers:
+                customer_id = customers[0]["id"]
+                logger.info(f"Found customer ID: {customer_id} for phone: {phone_number}")
+                return customer_id
+            else:
+                logger.info(f"No customers found for phone: {phone_number}")
+                raise HTTPException(status_code=404, detail="No customer found with this phone number.")
+        else:
+            logger.error(f"Failed to fetch customer by phone: {response.text}")
+            raise HTTPException(status_code=response.status_code, detail="Failed to fetch customer.")
+
+### Customer Schema
+class Address(BaseModel):
+    street: str
+    unit: Optional[str] = None
+    city: str
+    state: str
+    zip: str
+    country: str
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
+class CreateCustomerRequest(BaseModel):
+    name: str
+    address: Address
+
+### Job Booking Schema
+class JobGeneratedLeadSource(BaseModel):
+    jobId: Optional[int] = None
+    employeeId: Optional[int] = None
+
+class Appointment(BaseModel):
+    start: str
+    end: str
+    arrivalWindowStart: str
+    arrivalWindowEnd: str
+    technicianIds: List[int]
+
+class CustomField(BaseModel):
+    typeId: int
+    value: str
+
+class ExternalDataItem(BaseModel):
+    key: str
+    value: str
+
+class ExternalData(BaseModel):
+    applicationGuid: str
+    externalData: List[ExternalDataItem]
+
+class BookJobRequest(BaseModel):
+    customerId: int
+    locationId: int
+    projectId: Optional[int] = None
+    businessUnitId: int
+    jobGeneratedLeadSource: Optional[JobGeneratedLeadSource] = None
+    jobTypeId: int
+    priority: str
+    campaignId: int
+    appointments: List[Appointment]
+    summary: str
+    customFields: List[CustomField] = []
+    tagTypeIds: List[int] = []
+    externalData: ExternalData
+    invoiceSignatureIsRequired: bool
+    customerPo: Optional[str] = None
+    soldById: Optional[int] = None
+
+### Webhook Endpoint to Extract from_number
+@app.post("/webhook")
+async def webhook(request: Request):
+    """
+    Webhook endpoint triggered when the agent picks up a call.
+    Extracts 'from_number' and fetches customer data.
+    """
+    try:
+        event_data = await request.json()
+        logger.info(f"Received webhook event: {json.dumps(event_data, indent=2)}")
+
+        call_inbound_data = event_data.get('call_inbound', {})
+        from_number = call_inbound_data.get('from_number')
+
+        if not from_number:
+            logger.warning("Missing 'from_number' in payload")
+            return JSONResponse(content={"status": "error", "message": "Missing 'from_number'"}, status_code=400)
+
+        logger.info(f"User's phone number: {from_number}")
+        customer_data = await get_customers_internal(from_number)
+
+        formatted_response = {
+            "from_number": from_number,
+            "customers": [{"id": customer["id"]} for customer in customer_data.get("data", [])]
+        }
+
+        logger.info(f"Formatted webhook response: {json.dumps(formatted_response, indent=2)}")
+        return JSONResponse(content=formatted_response, status_code=200)
+
+    except Exception as e:
+        logger.error(f"Error processing webhook: {e}")
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+### Public /get_customers_simplified/ Endpoint
+@app.post("/get_customers_simplified/")
+async def get_customers_simplified(request: Request):
+    """
+    Public endpoint to fetch customer data based on phone number from the request body.
+    """
+    try:
+        body = await request.json()
+        logger.info(f"Received payload for /get_customers_simplified/: {json.dumps(body, indent=2)}")
+
+        # Get phone number and remove +1 if present
+        phone = body.get("from_number") or body.get("call", {}).get("from_number")
+        if not phone:
+            raise HTTPException(status_code=400, detail="Missing phone number")
+
+        # Remove +1 prefix and any non-digit characters
+        phone_digits = ''.join(filter(str.isdigit, phone))
+        if phone_digits.startswith('1'):
+            phone_digits = phone_digits[1:]  # Remove leading 1 after +
+
+        # Format phone number for ServiceTitan
+        formatted_phone = f"({phone_digits[:3]}) {phone_digits[3:6]}-{phone_digits[6:]}"
+
+        # Fetch full customer data from ServiceTitan
+        access_token = await get_access_token()
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "ST-App-Key": APP_KEY,
+            "Content-Type": "application/json",
+        }
+        params = {"phone": formatted_phone}
+        logger.info(f"Fetching customers with params: {params}")
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(CUSTOMER_LIST_URL, headers=headers, params=params)
+            logger.debug(f"ServiceTitan response: {response.text}")
+            if response.status_code == 200:
+                customer_data = response.json()
+            else:
+                logger.error(f"Failed to fetch customers: {response.text}")
+                raise HTTPException(status_code=response.status_code, detail="Error fetching customer data")
+
+        # Extract customer details and format according to schema
+        customers = customer_data.get("data", [])
+        formatted_customers = [{"id": customer["id"]} for customer in customers if "id" in customer]
+
+        formatted_response = {
+            "from_number": phone,  # Keep original format from input
+            "customers": formatted_customers
+        }
+
+        logger.info(f"Formatted get_customers_simplified response: {json.dumps(formatted_response, indent=2)}")
+        return JSONResponse(content=formatted_response, status_code=200)
+
+    except Exception as e:
+        logger.error(f"Error in get_customers_simplified: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+### Create Customer API
+### Create Customer API
+@app.post("/create_customer_get_ids/", summary="Create Customer and Return Customer ID and Location ID")
+async def create_customer_get_ids_endpoint(request: Request):
+    post_data = await request.json()
+    if "args" in post_data:
+        args = post_data["args"]
+    else:
+        args = post_data
+
+    name = args.get("name")
+    address = args.get("address")
+    phone = args.get("phone")  # Phone number is now required
+
+    # Validate required fields
+    if not name or not address or not phone:
+        raise HTTPException(status_code=400, detail="All of 'name', 'address', and 'phone' are required")
+
+    required_fields = ["street", "city", "state", "zip", "country"]
+    for field in required_fields:
+        if field not in address:
+            raise HTTPException(status_code=400, detail=f"Missing required address field: {field}")
+
+    # Process phone number: remove +1 prefix if present
+    phone_digits = ''.join(filter(str.isdigit, phone))
+    if phone_digits.startswith('1'):
+        phone_digits = phone_digits[1:]  # Remove leading 1 after +
+
+    # Ensure we have enough digits to format
+    if len(phone_digits) < 10:
+        raise HTTPException(status_code=400, detail="Phone number must contain at least 10 digits after country code")
+
+    access_token = await get_access_token()
+
+    # Format phone number to match ServiceTitan's expected format: (XXX) XXX-XXXX
+    phone_number = f"({phone_digits[:3]}) {phone_digits[3:6]}-{phone_digits[6:]}"
+
+    # Construct customer data according to ServiceTitan API schema with all optional fields
+    customer_data = {
+        "name": name,
+        "type": "Residential",  # Assuming "Residential" is a valid Crm.V2.CustomerType
+        "doNotMail": False,
+        "doNotService": False,
+        "address": {
+            "street": address["street"],
+            "unit": address.get("unit", ""),
+            "city": address["city"],
+            "state": address["state"],
+            "zip": address["zip"],
+            "country": address["country"],
+            "latitude": address.get("latitude", 0.0),
+            "longitude": address.get("longitude", 0.0)
+        },
+        "contacts": [
+            {
+                "type": "Email",  # Restored from previous code
+                "value": "us.example@email.com",
+                "memo": "Primary contact"
+            },
+            {
+                "type": "Phone",  # Valid Crm.V2.ContactType for phone number
+                "value": phone_number,
+                "memo": "Primary phone"
+            }
+        ],
+        "locations": [
+            {
+                "name": "Main Office",  # Restored from previous code
+                "address": {
+                    "street": address["street"],
+                    "unit": address.get("unit", ""),
+                    "city": address["city"],
+                    "state": address["state"],
+                    "zip": address["zip"],
+                    "country": address["country"],
+                    "latitude": address.get("latitude", 0.0),
+                    "longitude": address.get("longitude", 0.0)
+                },
+                "contacts": [],  # Optional, empty as in schema
+                "customFields": [],  # Optional, empty as in schema
+                "tagTypeIds": []  # Optional, empty as in schema
+            }
+        ],
+        "customFields": [],  # Restored, empty as optional
+        "tagTypeIds": [],  # Restored, empty as optional
+        "externalData": {  # Restored from previous code
+            "applicationGuid": "4d0ec0e7-a447-46fb-87e1-50baaa462352",
+            "externalData": [
+                {"key": "externalKey", "value": "externalValue"}
+            ]
+        }
+    }
+
+    logger.info(f"Sending customer data to ServiceTitan: {json.dumps(customer_data, indent=2)}")
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            CUSTOMER_URL,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "ST-App-Key": APP_KEY,
+                "Content-Type": "application/json",
+            },
+            json=customer_data
+        )
+        logger.debug(f"ServiceTitan response status: {response.status_code}")
+        logger.debug(f"ServiceTitan response text: {response.text}")
+
+        if response.status_code in [200, 201]:
+            customer_response = response.json()
+            customer_id = customer_response.get("id")
+        else:
+            logger.error(f"Failed to create customer: {response.text}")
+            raise HTTPException(status_code=response.status_code, detail=f"Failed to create customer: {response.text}")
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            LOCATIONS_URL,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "ST-App-Key": APP_KEY,
+            },
+            params={"customerId": customer_id}
+        )
+        if response.status_code == 200:
+            locations_response = response.json()
+            location_id = locations_response["data"][0]["id"] if locations_response.get("data") else None
+        else:
+            logger.error(f"Failed to get locations: {response.text}")
+            raise HTTPException(status_code=response.status_code, detail="Failed to get locations")
+
+    return {
+        "customer_id": customer_id,
+        "location_id": location_id,
+        "message": f"Customer '{name}' created with ID {customer_id} and location ID {location_id}"
+    }
+
+
+### Get Locations Endpoint
+@app.post("/get_locations/")
+async def get_locations(request: Request, data: dict = Body(...)):
+    """Fetch locations for a given customer ID via POST request."""
+    args = data.get("args", {})
+    customer_id = args.get("customerId")
+    if not customer_id:
+        logger.error("customerId not found in request body under 'args'")
+        raise HTTPException(status_code=400, detail="customerId is required in request body under 'args'")
+
+    access_token = await get_access_token()
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "ST-App-Key": APP_KEY,
+        "Content-Type": "application/json",
+    }
+    params = {"customerId": customer_id}
+    logger.info(f"Sending request to external API with params: {params}")
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(LOCATIONS_URL, headers=headers, params=params)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.error(f"Failed to fetch locations: {response.text}")
+            raise HTTPException(status_code=response.status_code, detail="Failed to fetch locations.")
+
+### Book Job API
+@app.post("/book_job", summary="Create Job with Full ServiceTitan Schema")
+async def book_job_endpoint(request: Request):
+    post_data = await request.json()
+    logger.debug(f"Received request payload: {json.dumps(post_data, indent=2)}")
+    if "args" in post_data:
+        post_data = post_data["args"]
+    elif "data" in post_data:
+        post_data = post_data["data"]
+
+    if "summary" not in post_data:
+        logger.error("Missing summary field")
+        raise HTTPException(status_code=400, detail="summary is required")
+
+    access_token = await get_access_token()
+    async with httpx.AsyncClient() as client:
+        response = await client.post(CREATE_JOB_URL, headers={
+            "Authorization": f"Bearer {access_token}",
+            "ST-App-Key": APP_KEY,
+            "Content-Type": "application/json",
+        }, json=post_data)
+        if response.status_code in [200, 201]:
+            return {"message": "Job created successfully", "job": response.json()}
+        else:
+            logger.error(f"Failed to create job: {response.text}")
+            raise HTTPException(status_code=response.status_code, detail=f"Failed to create job: {response.text}")
+
+### Utility Endpoint for Current Time
+@app.post("/current-time")
+def read_current_time():
+    pakistan_time = datetime.now(pakistan_tz)
+    formatted_time = pakistan_time.strftime("%Y-%m-%d %H:%M:%S")
+    return {"current_time": formatted_time}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app:app", host="0.0.0.0", port=8080, reload=True)
