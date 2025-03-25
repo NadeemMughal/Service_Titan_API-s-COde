@@ -2,11 +2,11 @@ import requests
 import json
 
 # Replace with your actual credentials
-CLIENT_ID = "cid.5sz7j79l90xsz9umlgfws6q2j"
-CLIENT_SECRET = "cs1.3n3iridot5dva4i91ty5g4fq1c8s9pmt4rk5o5ahupldlhkg2v"
-TENANT_ID = "1561207974"
-APP_KEY = "ak1.p1hyw417u4rd7c19faytek0t2"
-BOOKING_PROVIDER_ID = "33459644"  # Replace with your booking provider ID
+CLIENT_ID = "add your own"
+CLIENT_SECRET = "add your own"
+TENANT_ID = "add your own"
+APP_KEY = "add your own"
+BOOKING_PROVIDER_ID = "add your own"  # Replace with your booking provider ID
 
 
 def get_access_token():
