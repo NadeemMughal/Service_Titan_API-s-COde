@@ -3,10 +3,10 @@ from datetime import datetime
 import pytz
 
 # Replace with your actual credentials and tenant ID
-client_id = "cid.tqn91qx5m8xp3ya71s1kauztd"
-client_secret = "cs1.1jof6blgkvq0k34ws1lp53kwzu8qvlvh611ksrahruaigpyvzd"
-tenant_id = 1561207974
-job_id = 30920896
+client_id = "add your own"
+client_secret = "add your own"
+tenant_id = add your own
+job_id = add your own
 
 # Set the start and end times in local time (PST)
 local_start_time = datetime(2025, 2, 26, 13, 0, 0)  # February 26, 2025, at 1 PM PST
