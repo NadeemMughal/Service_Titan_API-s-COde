@@ -10,10 +10,10 @@ app = FastAPI()
 CRM_API_BASE_URL = "https://public-api-gateway.st.dev/crm/v2"
 
 # Credentials
-client_id = "cid.sevhc9hatg3gkneoa0ky0pyzf"
-client_secret = "cs1.lc8y5vfpkxnu420uf2qggwfmaf11kbm5giaegeuzbgkszrttbq"
-tenant_id = 1561207974
-APP_KEY = "ak1.6w1flz9ji6k5btaaoviw0ikpa"  # Ensure this is correct
+client_id = "add your own"
+client_secret = "add your own"
+tenant_id = add your own
+APP_KEY = "add your own"  # Ensure this is correct
 
 # Function to get an access token with debugging
 def get_access_token():
